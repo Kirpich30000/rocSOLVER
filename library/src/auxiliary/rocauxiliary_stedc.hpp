@@ -1014,9 +1014,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
 
     // select batch instance to work with
     /* --------------------------------------------------- */
-    S* C;
-    if(CC)
-        C = load_ptr_batch<S>(CC, bid, shiftC, strideC);
+    S* C = load_ptr_batch<S>(CC, bid, shiftC, strideC);
     S* D = DD + bid * strideD;
     S* E = EE + bid * strideE;
     /* --------------------------------------------------- */
@@ -1045,10 +1043,9 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
 
     // temporary arrays in shared memory
     /* --------------------------------------------------- */
-    extern __shared__ rocblas_int lsmem[];
     // used to store temp values during the different reductions
-    S* inrmsd = reinterpret_cast<S*>(lsmem);
-    S* inrmsz = inrmsd + hipBlockDim_x;
+    __shared__ S inrmsd[STEDC_BDIM];
+    __shared__ S inrmsz[STEDC_BDIM];
     /* --------------------------------------------------- */
 
     // local variables
@@ -2941,7 +2938,6 @@ rocblas_status rocsolver_stedc_template(rocblas_handle handle,
 
         // 3. merge phase
         //----------------
-        size_t lmemsize1 = sizeof(S) * 2 * STEDC_BDIM;
         size_t lmemsize3 = sizeof(S) * STEDC_BDIM;
         rocblas_int numgrps3 = ((n - 1) / maxblks + 1) * maxblks;
 
@@ -2957,7 +2953,7 @@ rocblas_status rocsolver_stedc_template(rocblas_handle handle,
             rocblas_int numgrps2 = 1 << (maxlevs - 1 - k);
             ROCSOLVER_LAUNCH_KERNEL((stedc_mergePrepare_kernel<rocsolver_stedc_mode_qr, S>),
                                     dim3(numgrps2, STEDC_NUM_SPLIT_BLKS, batch_count),
-                                    dim3(STEDC_BDIM), lmemsize1, stream, k, n, D + shiftD, strideD,
+                                    dim3(STEDC_BDIM), 0, stream, k, n, D + shiftD, strideD,
                                     E + shiftE, strideE, V, 0, ldv, strideV, tmpz, tempgemm, splits,
                                     eps);
 
