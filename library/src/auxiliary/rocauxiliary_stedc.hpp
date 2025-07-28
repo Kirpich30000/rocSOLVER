@@ -65,15 +65,17 @@ __host__ __device__ inline rocblas_int get_splits_size(const rocblas_int n)
 {
     // splits_map layout:
     // struct {
-    //      rocblas_int splits[n];   // positions where each block begings
-    //      rocblas_int __unused;    // ??? unused ???
+    //      rocblas_int splits[n+1]; // positions where each block begings
     //      rocblas_int nb;          // total number of split blocks
     //      rocblas_int nsA[n];      // the sub-blocks sizes
     //      rocblas_int psA[n];      // the sub-blocks initial positions
     //      rocblas_int idd[n];      // if idd[i] = 0, the value in position i has been deflated  (aka mask)
     //      rocblas_int pers[n];     // container of permutations when solving the secular eqns
+    //      rocblas_int szfsA[n];    // sizes of the first sub-block in a merge
+    //      rocblas_int szsA[n];     // sizes of both sub-blocks in a merge
+    //      rocblas_int ddsA[n];     // degrees of secular equation
     // };
-    return 5 * n + 2;
+    return 8 * n + 2;
 }
 
 /***************** Device auxiliary functions ******************************************/
@@ -817,7 +819,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM) stedc_divide_kernel(const ro
     rocblas_int levs;
     // other aux variables
     S p;
-    rocblas_int *ns, *ps;
+    rocblas_int *ns, *ps, *szs, *szfs;
     /* --------------------------------------------------- */
 
     // work with STEDC_BDIM split blocks in parallel
@@ -950,7 +952,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM) stedc_solve_kernel(const roc
     rocblas_int levs;
     // other aux variables
     S p;
-    rocblas_int *ns, *ps;
+    rocblas_int *ns, *ps, *szs, *szfs;
     /* --------------------------------------------------- */
 
     // work with STEDC_NUM_SPLIT_BLKS split blocks in parallel
@@ -1046,6 +1048,12 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     rocblas_int* idd = psA + n;
     // container of permutations when solving the secular eqns
     rocblas_int* pers = idd + n;
+    // sizes of the first sub-block in a merge
+    rocblas_int* szfsA = pers + n;
+    // sizes of both sub-blocks in a merge
+    rocblas_int* szsA = szfsA + n;
+    // degrees of secular equation
+    rocblas_int* ddsA = szsA + n;
     // the rank-1 modification vectors in the merges
     S* z = tmpzA + bid * (2 * n);
     // roots of secular equations
@@ -1080,7 +1088,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     rocblas_int levs;
     // other aux variables
     S p;
-    rocblas_int *ns, *ps;
+    rocblas_int *ns, *ps, *szs, *szfs;
     /* --------------------------------------------------- */
 
     // work with STEDC_NUM_SPLIT_BLKS split blocks in parallel
@@ -1095,6 +1103,8 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
         bs = p2 - p1;
         ns = nsA + p1;
         ps = psA + p1;
+        szs = szsA + p1;
+        szfs = szfsA + p1;
 
         // determine ideal number of sub-blocks
         // tn is the number of thread-groups needed
@@ -1128,6 +1138,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             sz = ns[tid];
             for(int j = 1; j < bd; ++j)
                 sz += ns[tid + j];
+            szfs[tid] = sz;
             // with this, all threads involved in a merge
             // will point to the same row of C and the same off-diag element
             ptz = (iam == 0) ? C + p2 - 1 + sz : C + p2;
@@ -1189,6 +1200,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             sz = ns[in];
             for(int i = 1; i < bdm; ++i)
                 sz += ns[in + i];
+            szs[in] = sz;
             in = ps[in];
 
             // first deflate zero components
@@ -1295,6 +1307,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
                     dd++;
                 }
             }
+            ddsA[in] = dd;
             /* ----------------------------------------------------------------- */
         }
     }
@@ -1507,6 +1520,12 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     rocblas_int* idd = psA + n;
     // container of permutations when solving the secular eqns
     rocblas_int* pers = idd + n;
+    // sizes of the first sub-block in a merge
+    rocblas_int* szfsA = pers + n;
+    // sizes of both sub-blocks in a merge
+    rocblas_int* szsA = szfsA + n;
+    // degrees of secular equation
+    rocblas_int* ddsA = szsA + n;
     // the rank-1 modification vectors in the merges
     S* z = tmpzA + bid * (2 * n);
     // roots of secular equations
@@ -1533,7 +1552,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     // number of level of division
     rocblas_int levs;
     // other aux variables
-    rocblas_int *ns, *ps;
+    rocblas_int *ns, *ps, *szs, *szfs;
     /* --------------------------------------------------- */
 
     // work with STEDC_NUM_SPLIT_BLKS split blocks in parallel
@@ -1548,6 +1567,8 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
         bs = p2 - p1;
         ns = nsA + p1;
         ps = psA + p1;
+        szs = szsA + p1;
+        szfs = szfsA + p1;
 
         // determine ideal number of sub-blocks
         // tn is the number of thread-groups needed
@@ -1577,20 +1598,16 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             // Find off-diagonal element of the merge
             // Threads with iam = 0 work with components below the merge point;
             // threads with iam = 1 work above the merge point
-            sz = ns[tid];
-            for(int j = 1; j < bd; ++j)
-                sz += ns[tid + j];
             // with this, all threads involved in a merge
             // will point to the same row of C and the same off-diag element
+            sz = szfs[tid];
             S p = (iam == 0) ? 2 * E[p2 - 1 + sz] : 2 * E[p2 - 1];
 
             // determine boundaries of what would be the new merged sub-block
             // 'in' will be its initial position.
             // 'sz' will be its size (i.e. the sum of the sizes of all merging sub-blocks)
             rocblas_int in = tid - iam * bd;
-            sz = ns[in];
-            for(int i = 1; i < bdm; ++i)
-                sz += ns[in + i];
+            sz = szs[in];
             in = ps[in];
 
             // 3d.2. Organize data with non-deflated values to prepare secular equation
@@ -1612,12 +1629,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             rocblas_int* per = pers + in;
 
             // find degree of secular equation
-            rocblas_int dd = 0;
-            for(int i = 0; i < sz; ++i)
-            {
-                if(mask[i] == 1)
-                    dd++;
-            }
+            rocblas_int dd = ddsA[in];
 
             sort_tmpd_zz(dd, iam, bdm, tmpd, zz, per);
             copy_d_ev(dd, iam, bdm, sz, n, tmpd, ev, diag);
@@ -1681,6 +1693,12 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     rocblas_int* idd = psA + n;
     // container of permutations when solving the secular eqns
     rocblas_int* pers = idd + n;
+    // sizes of the first sub-block in a merge
+    rocblas_int* szfsA = pers + n;
+    // sizes of both sub-blocks in a merge
+    rocblas_int* szsA = szfsA + n;
+    // degrees of secular equation
+    rocblas_int* ddsA = szsA + n;
     // the rank-1 modification vectors in the merges
     S* z = tmpzA + bid * (2 * n);
     // roots of secular equations
@@ -1707,7 +1725,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     // number of level of division
     rocblas_int levs;
     // other aux variables
-    rocblas_int *ns, *ps;
+    rocblas_int *ns, *ps, *szs, *szfs;
     /* --------------------------------------------------- */
 
     // work with STEDC_NUM_SPLIT_BLKS split blocks in parallel
@@ -1722,6 +1740,9 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
         bs = p2 - p1;
         ns = nsA + p1;
         ps = psA + p1;
+        szs = szsA + p1;
+        szfs = szfsA + p1;
+
 
         // determine ideal number of sub-blocks
         // tn is the number of thread-groups needed
@@ -1751,20 +1772,14 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             // Find off-diagonal element of the merge
             // Threads with iam = 0 work with components below the merge point;
             // threads with iam = 1 work above the merge point
-            sz = ns[tid];
-            for(int j = 1; j < bd; ++j)
-                sz += ns[tid + j];
             // with this, all threads involved in a merge
             // will point to the same row of C and the same off-diag element
-            S p = (iam == 0) ? 2 * E[p2 - 1 + sz] : 2 * E[p2 - 1];
 
             // determine boundaries of what would be the new merged sub-block
             // 'in' will be its initial position.
             // 'sz' will be its size (i.e. the sum of the sizes of all merging sub-blocks)
             rocblas_int in = tid - iam * bd;
-            sz = ns[in];
-            for(int i = 1; i < bdm; ++i)
-                sz += ns[in + i];
+            sz = szs[in];
             in = ps[in];
 
             // 3d.2. Organize data with non-deflated values to prepare secular equation
@@ -1786,12 +1801,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             rocblas_int* per = pers + in;
 
             // find degree of secular equation
-            rocblas_int dd = 0;
-            for(int i = 0; i < sz; ++i)
-            {
-                if(mask[i] == 1)
-                    dd++;
-            }
+            rocblas_int dd = ddsA[in];
 
             sort_tmpd_zz(dd, iam, bdm, tmpd, zz, per);
             copy_d_ev(dd, iam, bdm, sz, n, tmpd, ev, diag);
@@ -1849,6 +1859,12 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     rocblas_int* idd = psA + n;
     // container of permutations when solving the secular eqns
     rocblas_int* pers = idd + n;
+    // sizes of the first sub-block in a merge
+    rocblas_int* szfsA = pers + n;
+    // sizes of both sub-blocks in a merge
+    rocblas_int* szsA = szfsA + n;
+    // degrees of secular equation
+    rocblas_int* ddsA = szsA + n;
     // the rank-1 modification vectors in the merges
     S* z = tmpzA + bid * (2 * n);
     // roots of secular equations
@@ -1875,7 +1891,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     // number of level of division
     rocblas_int levs;
     // other aux variables
-    rocblas_int *ns, *ps;
+    rocblas_int *ns, *ps, *szs, *szfs;
     /* --------------------------------------------------- */
 
     // work with STEDC_NUM_SPLIT_BLKS split blocks in parallel
@@ -1890,6 +1906,8 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
         bs = p2 - p1;
         ns = nsA + p1;
         ps = psA + p1;
+        szs = szsA + p1;
+        szfs = szfsA + p1;
 
         // determine ideal number of sub-blocks
         // tn is the number of thread-groups needed
@@ -1919,20 +1937,16 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             // Find off-diagonal element of the merge
             // Threads with iam = 0 work with components below the merge point;
             // threads with iam = 1 work above the merge point
-            sz = ns[tid];
-            for(int j = 1; j < bd; ++j)
-                sz += ns[tid + j];
             // with this, all threads involved in a merge
             // will point to the same row of C and the same off-diag element
+            sz = szfs[tid];
             S p = (iam == 0) ? 2 * E[p2 - 1 + sz] : 2 * E[p2 - 1];
 
             // determine boundaries of what would be the new merged sub-block
             // 'in' will be its initial position.
             // 'sz' will be its size (i.e. the sum of the sizes of all merging sub-blocks)
             rocblas_int in = tid - iam * bd;
-            sz = ns[in];
-            for(int i = 1; i < bdm; ++i)
-                sz += ns[in + i];
+            sz = szs[in];
             in = ps[in];
 
             // 3d.2. Organize data with non-deflated values to prepare secular equation
@@ -1954,12 +1968,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             rocblas_int* per = pers + in;
 
             // find degree of secular equation
-            rocblas_int dd = 0;
-            for(int i = 0; i < sz; ++i)
-            {
-                if(mask[i] == 1)
-                    dd++;
-            }
+            rocblas_int dd = ddsA[in];
 
             solve_seq_eqns(dd, iam, bdm, sz, n, p, eps, ssfmin, ssfmax, mask, tmpd, ev, zz);
         }
@@ -2014,6 +2023,12 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     rocblas_int* idd = psA + n;
     // container of permutations when solving the secular eqns
     rocblas_int* pers = idd + n;
+    // sizes of the first sub-block in a merge
+    rocblas_int* szfsA = pers + n;
+    // sizes of both sub-blocks in a merge
+    rocblas_int* szsA = szfsA + n;
+    // degrees of secular equation
+    rocblas_int* ddsA = szsA + n;
     // the rank-1 modification vectors in the merges
     S* z = tmpzA + bid * (2 * n);
     // roots of secular equations
@@ -2040,7 +2055,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     // number of level of division
     rocblas_int levs;
     // other aux variables
-    rocblas_int *ns, *ps;
+    rocblas_int *ns, *ps, *szs, *szfs;
     /* --------------------------------------------------- */
 
     // work with STEDC_NUM_SPLIT_BLKS split blocks in parallel
@@ -2055,6 +2070,8 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
         bs = p2 - p1;
         ns = nsA + p1;
         ps = psA + p1;
+        szs = szsA + p1;
+        szfs = szfsA + p1;
 
         // determine ideal number of sub-blocks
         // tn is the number of thread-groups needed
@@ -2084,20 +2101,14 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             // Find off-diagonal element of the merge
             // Threads with iam = 0 work with components below the merge point;
             // threads with iam = 1 work above the merge point
-            sz = ns[tid];
-            for(int j = 1; j < bd; ++j)
-                sz += ns[tid + j];
             // with this, all threads involved in a merge
             // will point to the same row of C and the same off-diag element
-            S p = (iam == 0) ? 2 * E[p2 - 1 + sz] : 2 * E[p2 - 1];
 
             // determine boundaries of what would be the new merged sub-block
             // 'in' will be its initial position.
             // 'sz' will be its size (i.e. the sum of the sizes of all merging sub-blocks)
             rocblas_int in = tid - iam * bd;
-            sz = ns[in];
-            for(int i = 1; i < bdm; ++i)
-                sz += ns[in + i];
+            sz = szs[in];
             in = ps[in];
 
             // 3d.2. Organize data with non-deflated values to prepare secular equation
@@ -2119,12 +2130,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             rocblas_int* per = pers + in;
 
             // find degree of secular equation
-            rocblas_int dd = 0;
-            for(int i = 0; i < sz; ++i)
-            {
-                if(mask[i] == 1)
-                    dd++;
-            }
+            rocblas_int dd = ddsA[in];
 
             rescale_z(dd, iam, bdm, sz, n, per, mask, tmpd, diag, zz);
         }
