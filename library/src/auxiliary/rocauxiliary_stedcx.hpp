@@ -161,7 +161,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEBZ_SPLIT_THDS)
     const int bdim = hipBlockDim_x;
     S* D = DD + bid * strideD;
     S* E = EE + bid * strideE;
-    rocblas_int* splits = splitsA + bid * (5 * n + 2);
+    rocblas_int* splits = splitsA + bid * get_splits_size(n);
     // workspace
     rocblas_int* ninter = splits + n + 2;
     rocblas_int* tmpIS = ninter + 2 * n;
@@ -225,7 +225,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     S* W = WW + bid * strideW;
     S* V = VV + bid * strideV;
     rocblas_int* nev = nevA + bid;
-    rocblas_int* splits = splitsA + bid * (5 * n + 2);
+    rocblas_int* splits = splitsA + bid * get_splits_size(n);
     // workspace
     rocblas_int* ninter = splits + n + 2;
     rocblas_int* idd = ninter + 2 * n;
@@ -389,7 +389,7 @@ void rocsolver_stedcx_getMemorySize(const rocblas_evect evect,
     *size_work_stack = std::max(s1, s2);
 
     // size for split blocks and sub-blocks positions
-    *size_splits = sizeof(rocblas_int) * (5 * n + 2) * batch_count;
+    *size_splits = sizeof(rocblas_int) * get_splits_size(n) * batch_count;
 
     // size for temporary diagonal and rank-1 modif vector
     *size_tmpz = sizeof(S) * (3 * n) * batch_count;
