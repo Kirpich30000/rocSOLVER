@@ -43,8 +43,14 @@
 
 ROCSOLVER_BEGIN_NAMESPACE
 
+#define ROCSOLVER_USE_REFERENCE_SECULAR_EQUATIONS_SOLVER
 #define STEDC_BDIM 512 // Number of threads per thread-block used in main stedc kernels
 #define MAXITERS 50 // Max number of iterations for root finding method
+
+#define TOLD_MUL 8 // deflate tolerance multiplier
+#define TOLZ_MUL 8 // tolerance multiplier
+#define TOLD_USE_SHARED_MAX 1
+#define TOLZ_USE_SHARED_MAX 1
 
 // TODO: using macro STEDC_EXTERNAL_GEMM = true for now. In the future we can pass
 // STEDC_EXTERNAL_GEMM at run time to switch between internal vector updates and
@@ -76,6 +82,19 @@ __host__ __device__ inline rocblas_int get_splits_size(const rocblas_int n)
     //      rocblas_int ddsA[n];     // degrees of secular equation
     // };
     return 8 * n + 2;
+}
+
+__host__ __device__ inline rocblas_int get_tmpz_size(const rocblas_int n)
+{
+    // tmpz layout:
+    // struct {
+    //    S tmpz[n];
+    //    union {
+    //         S maxZ[n];   // tolerances used for seq_solve
+    //         S evs[n];     // tmp eigenvalues
+    //    };
+    //    S maxD[n];        // tolerances used for deflation
+    return 3 * n;
 }
 
 /***************** Device auxiliary functions ******************************************/
@@ -1055,10 +1074,11 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     // degrees of secular equation
     rocblas_int* ddsA = szsA + n;
     // the rank-1 modification vectors in the merges
-    S* z = tmpzA + bid * (2 * n);
+    S* z = tmpzA + bid * get_tmpz_size(n);
     // temp for tolerance values used in deflation
-    // IMPORTANT: tolsA maps to the same memory as evs
-    S* tolsA = z + n;
+    // IMPORTANT: maxZA maps to the same memory as evs
+    S* maxZA = z + n;
+    S* maxDA = maxZA + n;
     // updated eigenvectors after merges
     S* vecs = vecsA + bid * 2 * (n * n);
     // temp values during the merges
@@ -1106,7 +1126,8 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
         ps = psA + p1;
         szs = szsA + p1;
         szfs = szfsA + p1;
-        S* tols = tolsA + p1;
+        S* maxZ = maxZA + p1;
+        S* maxD = maxDA + p1;
 
         // determine ideal number of sub-blocks
         // tn is the number of thread-groups needed
@@ -1188,9 +1209,6 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             // merge)
             maxd = inrmsd[0];
             maxz = inrmsz[0];
-            maxd = maxz > maxd ? maxz : maxd;
-
-            S tol = 8 * eps * maxd;
             /* ----------------------------------------------------------------- */
 
             // 3c. deflate eigenvalues
@@ -1203,8 +1221,24 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             for(int i = 1; i < bdm; ++i)
                 sz += ns[in + i];
             szs[in] = sz;
-            tols[in] = tol;
+            maxZ[in] = maxz;
+            maxD[in] = maxd;
             in = ps[in];
+
+
+            S tolD;
+#if TOLD_USE_SHARED_MAX
+            tolD = TOLD_MUL * eps * (maxz > maxd ? maxz : maxd);
+#else
+            tolD = TOLD_MUL * eps * maxd;
+#endif
+
+            S tolZ;
+#if TOLD_USE_SHARED_MAX
+            tolZ = TOLZ_MUL * eps * (maxz > maxd ? maxz : maxd);
+#else
+            tolZ = TOLZ_MUL * eps * maxz;
+#endif
 
             // first deflate zero components
             S f, g, c, s, rr;
@@ -1212,7 +1246,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             {
                 tx = in + i;
                 g = z[tx];
-                if(abs(p * g) <= tol)
+                if(abs(p * g) <= tolZ)
                     // deflated ev because component in z is zero
                     idd[tx] = 0;
                 else
@@ -1256,7 +1290,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
                     top += in;
                     if(idd[base] == 1 && idd[top] == 1 && top < sz + in)
                     {
-                        if(abs(D[base] - D[top]) <= tol)
+                        if(abs(D[base] - D[top]) <= tolD)
                         {
                             // deflated ev because it is repeated
                             idd[top] = 0;
@@ -1372,10 +1406,11 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     // degrees of secular equation
     rocblas_int* ddsA = szsA + n;
     // the rank-1 modification vectors in the merges
-    S* z = tmpzA + bid * (2 * n);
+    S* z = tmpzA + bid * get_tmpz_size(n);
     // temp for tolerance values used in deflation
-    // IMPORTANT: tolsA maps to the same memory as evs
-    S* tolsA = z + n;
+    // IMPORTANT: maxZA maps to the same memory as evs
+    S* maxZA = z + n;
+    S* maxDA = maxZA + n;
     // updated eigenvectors after merges
     S* vecs = vecsA + bid * 2 * (n * n);
     // temp values during the merges
@@ -1423,7 +1458,8 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
         ps = psA + p1;
         szs = szsA + p1;
         szfs = szfsA + p1;
-        S* tols = tolsA + p1;
+        S* maxZ = maxZA + p1;
+        S* maxD = maxDA + p1;
 
         // determine ideal number of sub-blocks
         // tn is the number of thread-groups needed
@@ -1505,9 +1541,6 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             // merge)
             maxd = inrmsd[0];
             maxz = inrmsz[0];
-            maxd = maxz > maxd ? maxz : maxd;
-
-            S tol = 8 * eps * maxd;
             /* ----------------------------------------------------------------- */
 
             // 3c. deflate eigenvalues
@@ -1520,8 +1553,16 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             for(int i = 1; i < bdm; ++i)
                 sz += ns[in + i];
             szs[in] = sz;
-            tols[in] = tol;
+            maxZ[in] = maxz;
+            maxD[in] = maxd;
             in = ps[in];
+
+            S tolZ;
+#if TOLD_USE_SHARED_MAX
+            tolZ = TOLZ_MUL * eps * (maxz > maxd ? maxz : maxd);
+#else
+            tolZ = TOLZ_MUL * eps * maxz;
+#endif
 
             // first deflate zero components
             S f, g, c, s, rr;
@@ -1529,7 +1570,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             {
                 tx = in + i;
                 g = z[tx];
-                if(abs(p * g) <= tol)
+                if(abs(p * g) <= tolZ)
                     // deflated ev because component in z is zero
                     idd[tx] = 0;
                 else
@@ -1599,10 +1640,11 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     // degrees of secular equation
     rocblas_int* ddsA = szsA + n;
     // the rank-1 modification vectors in the merges
-    S* z = tmpzA + bid * (2 * n);
+    S* z = tmpzA + bid * get_tmpz_size(n);
     // temp for tolerance values used in deflation
-    // IMPORTANT: tolsA maps to the same memory as evs
-    S* tolsA = z + n;
+    // IMPORTANT: maxZA maps to the same memory as evs
+    S* maxZA = z + n;
+    S* maxDA = maxZA + n;
     // updated eigenvectors after merges
     S* vecs = vecsA + bid * 2 * (n * n);
     // temp values during the merges
@@ -1643,7 +1685,8 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
         ps = psA + p1;
         szs = szsA + p1;
         szfs = szfsA + p1;
-        S* tols = tolsA + p1;
+        S* maxZ = maxZA + p1;
+        S* maxD = maxDA + p1;
 
         // determine ideal number of sub-blocks
         // tn is the number of thread-groups needed
@@ -1684,10 +1727,61 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             // 'sz' will be its size (i.e. the sum of the sizes of all merging sub-blocks)
             rocblas_int in = tid - iam * bd;
             sz = szs[in];
-            S tol = tols[in];
+            S maxd = maxD[in];
+            S maxz = maxZ[in];
+            S tolD;
+#if TOLD_USE_SHARED_MAX
+            tolD = TOLD_MUL * eps * (maxz > maxd ? maxz : maxd);
+#else
+            tolD = TOLD_MUL * eps * maxd;
+#endif
             in = ps[in];
 
             // now deflate repeated values
+#if 1
+            S piv, val;
+            for(int i = 0; i < sz; ++i)
+            {
+                __syncthreads();
+
+                int base = i + in;
+                if(idd[base] == 1)
+                {
+                    piv = D[base];
+                    for(int j = i + 1; j < sz; ++j)
+                    {
+                        int top = j + in;
+                        val = D[top];
+                        if(idd[top] == 1 && std::abs(piv - val) <= tolD)
+                        {
+                            // rotation to eliminate component in z
+                            S g = z[top];
+                            S f = z[base];
+                            S c, s, rr;
+                            lartg(f, g, c, s, rr);
+                            
+                            // update C with the rotation
+                            for(int ii = tidb; ii < n; ii += hipBlockDim_x)
+                            {
+                                S valf = C[ii + base * ldc];
+                                S valg = C[ii + top * ldc];
+                                C[ii + base * ldc] = valf * c - valg * s;
+                                C[ii + top * ldc] = valf * s + valg * c;
+                            }
+                            __syncthreads();
+
+                            // deflated ev because it is repeated
+                            if(tidb == 0)
+                            {
+                                idd[top] = 0;
+                                z[base] = rr;
+                                z[top] = 0;
+                            }
+                        }
+                    }
+                }
+            }
+#else
             rocblas_int sz_even, sz_half, base, top, com;
             sz_even = (sz % 2 == 1) ? sz + 1 : sz;
             sz_half = sz_even / 2;
@@ -1723,7 +1817,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
                     top += in;
                     if(idd[base] == 1 && idd[top] == 1 && top < sz + in)
                     {
-                        if(abs(D[base] - D[top]) <= tol)
+                        if(abs(D[base] - D[top]) <= tolD)
                         {
                             // deflated ev because it is repeated
                             idd[top] = 0;
@@ -1747,6 +1841,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
                     __syncthreads();
                 }
             }
+#endif
             /* ----------------------------------------------------------------- */
         }
     }
@@ -1809,10 +1904,10 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     // degrees of secular equation
     rocblas_int* ddsA = szsA + n;
     // the rank-1 modification vectors in the merges
-    S* z = tmpzA + bid * (2 * n);
+    S* z = tmpzA + bid * get_tmpz_size(n);
     // temp for tolerance values used in deflation
-    // IMPORTANT: tolsA maps to the same memory as evs
-    S* tolsA = z + n;
+    // IMPORTANT: maxZA maps to the same memory as evs
+    S* maxZA = z + n;
     // updated eigenvectors after merges
     S* vecs = vecsA + bid * 2 * (n * n);
     // temp values during the merges
@@ -1853,7 +1948,6 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
         ps = psA + p1;
         szs = szsA + p1;
         szfs = szfsA + p1;
-        S* tols = tolsA + p1;
 
         // determine ideal number of sub-blocks
         // tn is the number of thread-groups needed
@@ -1890,7 +1984,6 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             // 'sz' will be its size (i.e. the sum of the sizes of all merging sub-blocks)
             rocblas_int in = tid - iam * bd;
             sz = szs[in];
-            S tol = tols[in];
             in = ps[in];
 
             
@@ -1997,7 +2090,7 @@ void __device__ inline solve_seq_eqns(const rocblas_int dd,
                                       const rocblas_int* mask,
                                             S* tmpd,
                                             S* ev,
-                                      const S* zz)
+                                            S* zz)
 {
     /* ----------------------------------------------------------------- */
 
@@ -2145,7 +2238,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     // degrees of secular equation
     rocblas_int* ddsA = szsA + n;
     // the rank-1 modification vectors in the merges
-    S* z = tmpzA + bid * (2 * n);
+    S* z = tmpzA + bid * get_tmpz_size(n);
     // roots of secular equations
     S* evs = z + n;
     // updated eigenvectors after merges
@@ -2318,7 +2411,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     // degrees of secular equation
     rocblas_int* ddsA = szsA + n;
     // the rank-1 modification vectors in the merges
-    S* z = tmpzA + bid * (2 * n);
+    S* z = tmpzA + bid * get_tmpz_size(n);
     // roots of secular equations
     S* evs = z + n;
     // updated eigenvectors after merges
@@ -2484,7 +2577,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     // degrees of secular equation
     rocblas_int* ddsA = szsA + n;
     // the rank-1 modification vectors in the merges
-    S* z = tmpzA + bid * (2 * n);
+    S* z = tmpzA + bid * get_tmpz_size(n);
     // roots of secular equations
     S* evs = z + n;
     // updated eigenvectors after merges
@@ -2648,7 +2741,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     // degrees of secular equation
     rocblas_int* ddsA = szsA + n;
     // the rank-1 modification vectors in the merges
-    S* z = tmpzA + bid * (2 * n);
+    S* z = tmpzA + bid * get_tmpz_size(n);
     // roots of secular equations
     S* evs = z + n;
     // updated eigenvectors after merges
@@ -2820,7 +2913,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     // container of permutations when solving the secular eqns
     rocblas_int* pers = idd + n;
     // the rank-1 modification vectors in the merges
-    S* z = tmpzA + bid * (2 * n);
+    S* z = tmpzA + bid * get_tmpz_size(n);
     // roots of secular equations
     S* evs = z + n;
     // updated eigenvectors after merges
@@ -3086,7 +3179,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     // if idd[i] = 0, the value in position i has been deflated
     rocblas_int* idd = psA + n;
     // the rank-1 modification vectors in the merges
-    S* z = tmpzA + bid * (2 * n);
+    S* z = tmpzA + bid * get_tmpz_size(n);
     // roots of secular equations
     S* evs = z + n;
     // updated eigenvectors after merges
@@ -3412,7 +3505,7 @@ void rocsolver_stedc_getMemorySize(const rocblas_evect evect,
         *size_splits_map = sizeof(rocblas_int) * get_splits_size(n) * batch_count;
 
         // size for temporary diagonal and rank-1 modif vector
-        *size_tmpz = sizeof(S) * (2 * n) * batch_count;
+        *size_tmpz = sizeof(S) * get_tmpz_size(n) * batch_count;
     }
 }
 
