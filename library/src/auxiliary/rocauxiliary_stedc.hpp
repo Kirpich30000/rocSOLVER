@@ -506,7 +506,7 @@ void __device__ inline solve_seq_eqns(const rocblas_int dd,
                                       const rocblas_int* mask,
                                             S* tmpd,
                                             S* ev,
-                                      const S* zz)
+                                            S* zz)
 {
     /* ----------------------------------------------------------------- */
 
