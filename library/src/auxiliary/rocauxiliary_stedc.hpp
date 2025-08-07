@@ -578,7 +578,7 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             }
 
             for (int dn = 0; dn < dcnt; dn++) {
-                rocblas_int top = map[dgs + dn];
+                rocblas_int top = map[dgs + dn + 1];
                 S c = cc[top];
                 S s = ss[top];
                 S* Ctop = C + top * ldc;
