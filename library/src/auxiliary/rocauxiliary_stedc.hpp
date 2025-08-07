@@ -504,6 +504,119 @@ printf("tx = %d --> pos = %d\n",tx,pos);
 }
 
 
+//--------------------------------------------------------------------------------------//
+/** STEDC_MERGEROTATE_KERNEL performs rotation of vectors corresponding to deflations
+        - Call this kernel with batch_count groups in y, and n (matrix size) groups in x.
+        - Each group will deal with one deflation group, groups that don't correspond to
+          a deflation group will do nothing **/
+template <typename S>
+ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
+    stedc_mergeRotate_kernel(const rocblas_int levs,
+                             const rocblas_int blks,
+                             const rocblas_int k,
+                             const rocblas_int n,
+                             S* CC,
+                             const rocblas_int shiftC,
+                             const rocblas_int ldc,
+                             const rocblas_stride strideC,
+                             S* tmpzA,
+                             S* vecsA,
+                             rocblas_int* splitsA)
+{
+    // threads and groups indices
+    // batch instance id
+    rocblas_int bid = hipBlockIdx_y;
+
+    // temporary arrays in global memory
+    rocblas_int* splits = splitsA + bid * (5 * n + 2);
+    // the sub-blocks sizes
+    rocblas_int* ns = splits + n + 2;
+    // the sub-blocks initial positions
+    rocblas_int* ps = ns + n;
+    // if idd[i] = 0, the value in position i has been deflated
+    rocblas_int* idd = ps + n;
+    // container of permutations when solving the secular eqns
+    rocblas_int* pers = idd + n;
+    // the rank-1 modification vectors in the merges
+    S* z = tmpzA + bid * (2 * n);
+    // roots of secular equations
+    S* evs = z + n;
+    // updated eigenvectors after merges
+    S* vecs = vecsA + bid * 2 * (n * n);
+    // temp values during the merges
+    S* temps = vecs + (n * n);
+
+    S* C = load_ptr_batch<S>(CC, bid, shiftC, strideC);
+
+
+    rocblas_int* map = pers;         // TODO: update as needed
+    rocblas_int* dcounts = pers + n; // TODO: update as needed
+    S* cc = evs + n;                 // TODO: update as needed
+    S* ss = cc + n;                  // TODO: update as needed
+
+    constexpr int regs = 16;
+    const int chunk_width = regs * hipBlockDim_x;
+    const int n_chunks    = (n - 1) / chunk_width + 1;
+    S bval[regs];
+    S tval[regs];
+
+
+    rocblas_int dgs = hipBlockIdx_x;
+    rocblas_int dcnt = dcounts[dgs];
+    if (dcnt)
+    {
+        rocblas_int base = map[dgs];
+        S* Cbase = C + base * ldc;
+
+        for (int chunk = 0; chunk < n_chunks; chunk++) {
+
+            for(int i = 0; i < regs; i++) {
+                int x = chunk * chunk_width + i * hipBlockDim_x + hipThreadIdx_x;
+                if (x < n) {
+                    bval[i] = Cbase[x];
+                }
+            }
+
+            for (int dn = 0; dn < dcnt; dn++) {
+                rocblas_int top = map[dgs + dn];
+                S c = cc[top];
+                S s = ss[top];
+                S* Ctop = C + top * ldc;
+
+                for(int i = 0; i < regs; i++) {
+                    int x = chunk * chunk_width + i * hipBlockDim_x + hipThreadIdx_x;
+                    if(x < n){
+                        tval[i] = Ctop[x];
+                    }
+                }
+
+                for (int i = 0; i < regs; i++) {
+                    S valf = bval[i];
+                    S valg = tval[i];
+                    bval[i] = valf * c - valg * s;
+                    tval[i] = valf * s + valg * c; 
+                }
+
+                for(int i = 0; i < regs; i++) {
+                    int x = chunk * chunk_width + i * hipBlockDim_x + hipThreadIdx_x;
+                    if(x < n){
+                        Ctop[x] = tval[i];
+                    }
+                }
+                __syncthreads();
+            }
+
+            for(int i = 0; i < regs; i++) {
+                int x = chunk * chunk_width + i * hipBlockDim_x + hipThreadIdx_x;
+                if (x < n) {
+                    Cbase[x] = bval[i];
+                }
+            }
+        }
+    }
+}
+
+
 
 //--------------------------------------------------------------------------------------//
 /** STEDC_MERGEPREPARE_KERNEL performs deflation and prepares the secular equation for
@@ -1642,6 +1755,13 @@ print_device_matrix(std::cout,"pers",1,n,splits+4*n+2,1);
             ROCSOLVER_LAUNCH_KERNEL((stedc_mergeDeflate_kernel<S>), dim3(1, batch_count),
                                     dim3(64), lmemsize, stream, levs, blks, k, n, E + shiftE, strideE,
                                     tmpz, tempgemm, splits, eps);
+
+            if (0) {
+            ROCSOLVER_LAUNCH_KERNEL((stedc_mergeRotate_kernel<S>), dim3(n, batch_count),
+                                    dim3(STEDC_BDIM),
+                                    0, stream, levs, blks, k, n,
+                                    V, 0, ldv, strideV, tmpz, tempgemm, splits);
+            }
 
 
             numgrps2 = 1 << (levs - 1 - k);
