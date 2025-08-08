@@ -1479,7 +1479,8 @@ inline rocblas_int stedc_num_levels(const rocblas_int n)
         levels = std::ceil(std::log2(n)) - 4;
 
 //   return levels;
-    return 3;
+//    return 3;
+    return 1;
 }
 
 //--------------------------------------------------------------------------------------//
@@ -1661,8 +1662,8 @@ rocblas_status rocsolver_stedc_template(rocblas_handle handle,
     else
     {
 
-print_device_matrix(std::cout,"D in",1,n,D,1);
-print_device_matrix(std::cout,"E in",1,n-1,E,1);
+//print_device_matrix(std::cout,"D in",1,n,D,1);
+//print_device_matrix(std::cout,"E in",1,n-1,E,1);
 
         // initialize temporary array for vector updates
         size_t size_tempgemm = sizeof(S) * 2 * n * n * batch_count;
@@ -1717,9 +1718,9 @@ print_device_matrix(std::cout,"E in",1,n-1,E,1);
                                 V, 0, ldv, strideV, info, (S*)work_stack, splits, 
                                 eps, ssfmin, ssfmax);
 
-print_device_matrix(std::cout,"D at leaves",1,n,D,1);
-print_device_matrix(std::cout,"E at leaves",1,n-1,E,1);
-print_device_matrix(std::cout,"V at leaves",n,n,V,ldv);
+//print_device_matrix(std::cout,"D at leaves",1,n,D,1);
+//print_device_matrix(std::cout,"E at leaves",1,n-1,E,1);
+//print_device_matrix(std::cout,"V at leaves",n,n,V,ldv);
 
 
         // 3. merge phase
@@ -1735,37 +1736,37 @@ print_device_matrix(std::cout,"V at leaves",n,n,V,ldv);
             // a. prepare secular equations
             rocblas_int numgrps2 = (n - 1) / STEDC_BDIM + 1;
 
-printf("start merge at level k = %d\n",k);
-printf("------------------------------------------\n\n");
-print_device_matrix(std::cout,"ns",1,n,splits+n+2,1);
-print_device_matrix(std::cout,"ps",1,n,splits+2*n+2,1);
-print_device_matrix(std::cout,"D to be sorted",1,n,D,1);
+//printf("start merge at level k = %d\n",k);
+//printf("------------------------------------------\n\n");
+//print_device_matrix(std::cout,"ns",1,n,splits+n+2,1);
+//print_device_matrix(std::cout,"ps",1,n,splits+2*n+2,1);
+//print_device_matrix(std::cout,"D to be sorted",1,n,D,1);
 
             ROCSOLVER_LAUNCH_KERNEL((stedc_mergeSort_kernel<S>), dim3(numgrps2, batch_count),
                                     dim3(STEDC_BDIM), 0, stream, levs, blks, k, n, D + shiftD, strideD,
                                     V, 0, ldv, strideV, tmpz, tempgemm, splits);
 
-print_device_matrix(std::cout,"Z",1,n,tempgemm,1);
-print_device_matrix(std::cout,"sorted vals",1,n,tempgemm+n,1);
-print_device_matrix(std::cout,"pers",1,n,splits+4*n+2,1);
+//print_device_matrix(std::cout,"Z",1,n,tempgemm,1);
+//print_device_matrix(std::cout,"sorted vals",1,n,tempgemm+n,1);
+//print_device_matrix(std::cout,"pers",1,n,splits+4*n+2,1);
             
             ROCSOLVER_LAUNCH_KERNEL((stedc_mergeDeflate_kernel<S>), dim3(1, batch_count),
                                     dim3(64), lmemsize, stream, levs, blks, k, n, E + shiftE, strideE,
                                     tmpz, tempgemm, splits, eps);
 
-print_device_matrix(std::cout,"Z deflated",1,n,tmpz,1);
-print_device_matrix(std::cout,"evrf",1,n,tmpz+n,1);
-print_device_matrix(std::cout,"idrf",1,n,splits+3*n+2,1);
-print_device_matrix(std::cout,"dcount",1,n,splits,1);
-print_device_matrix(std::cout,"C",1,n,tempgemm+2*n,1);
-print_device_matrix(std::cout,"S",1,n,tempgemm+3*n,1);
+//print_device_matrix(std::cout,"Z deflated",1,n,tmpz,1);
+//print_device_matrix(std::cout,"evrf",1,n,tmpz+n,1);
+//print_device_matrix(std::cout,"idrf",1,n,splits+3*n+2,1);
+//print_device_matrix(std::cout,"dcount",1,n,splits,1);
+//print_device_matrix(std::cout,"C",1,n,tempgemm+2*n,1);
+//print_device_matrix(std::cout,"S",1,n,tempgemm+3*n,1);
 
             ROCSOLVER_LAUNCH_KERNEL((stedc_mergeRotate_kernel<S>), dim3(n, batch_count),
                                     dim3(STEDC_BDIM),
                                     0, stream, levs, blks, k, n,
                                     V, 0, ldv, strideV, tmpz, tempgemm, splits);
 
-print_device_matrix(std::cout,"V after rotate",n,n,V,ldv);            
+//print_device_matrix(std::cout,"V after rotate",n,n,V,ldv);            
 
 
             numgrps2 = 1 << (levs - 1 - k);
