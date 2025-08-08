@@ -487,6 +487,7 @@ stedc_mergeDeflate_kernel(const rocblas_int levs,
                             c[mapt] = cc;
                             s[mapt] = ss;
                         }
+                        dcount[i] = 0;
                         i++;
                     }
                     else
