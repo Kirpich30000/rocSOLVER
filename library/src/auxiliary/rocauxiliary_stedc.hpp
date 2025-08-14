@@ -2504,12 +2504,20 @@ rocblas_status rocsolver_stedc_template(rocblas_handle handle,
         rocblas_int numgrps3 = ((n - 1) / blks + 1) * blks;
         char* env_new_merge_values  = getenv("MERGE_VALUES_NEW");
         char* env_new_merge_prepare = getenv("MERGE_PREPARE_NEW");
+        char* env_show_idd          = getenv("SHOW_IDD");
+        char* env_show_dcount       = getenv("SHOW_DCOUNT");
         bool enable_new_merge_values  = true;
         bool enable_new_merge_prepare = true;
+        bool show_dcount = false;
+        bool show_idd    = false;
         if(env_new_merge_values)
             enable_new_merge_values = env_new_merge_values[0] == '1';
         if(env_new_merge_prepare)
             enable_new_merge_prepare = env_new_merge_prepare[0] == '1';
+        if(env_show_idd)
+            show_idd = env_show_idd[0] == '1';
+        if(env_show_dcount)
+            show_dcount = env_show_dcount[0] == '1';
         constexpr rocblas_int deflate_max_n = 32768 / sizeof(S);
 
         // launch merge for level k
@@ -2545,8 +2553,10 @@ rocblas_status rocsolver_stedc_template(rocblas_handle handle,
                                         levs, blks, k, n, D + shiftD, strideD, E + shiftE, strideE,
                                         V, 0, ldv, strideV, tmpz, tempgemm, splits, eps);
 
-                //hipError_t status = hipStreamSynchronize(stream);
-                //std::cout << "\nk=" << k << std::endl;
+                hipError_t status = hipStreamSynchronize(stream);
+                if (show_idd || show_dcount) {
+                    std::cout << "\nk=" << k << std::endl;
+                }
                 //print_device_matrix(std::cout, "map", 1, n, splits + 2 + n * 8, 1);
                 //print_device_matrix(std::cout, "D", 1, n, D, 1);
                 //print_device_matrix(std::cout, "mtols", 1, n, tempgemm + n * 4, 1);
@@ -2555,8 +2565,12 @@ rocblas_status rocsolver_stedc_template(rocblas_handle handle,
                 ////print_device_matrix(std::cout, "dbg2", 1, n, splits + 2 + n * 14, 1);
                 ////print_device_matrix(std::cout, "dbg3", 1, n, splits + 2 + n * 15, 1);
                 ////print_device_matrix(std::cout, "dbg4", 1, n, splits + 2 + n * 16, 1);
-                //print_device_matrix(std::cout, "dcount", 1, n, splits + 2 + n * 9, 1);
-                //print_device_matrix(std::cout, "idd", 1, n, splits + 2 + n * 3, 1);
+                if (show_idd) {
+                    print_device_matrix(std::cout, "idd", 1, n, splits + 2 + n * 3, 1);
+                }
+                if (show_dcount) {
+                    print_device_matrix(std::cout, "dcount", 1, n, splits + 2 + n * 9, 1);
+                }
                 //print_device_matrix(std::cout, "midd", 1, n, splits + 2 + n * 13, 1);
                 //print_device_matrix(std::cout, "mns", 1, n, splits + 2 + n * 10, 1);
                 //print_device_matrix(std::cout, "mps", 1, n, splits + 2 + n * 11, 1);
