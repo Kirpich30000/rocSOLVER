@@ -2530,6 +2530,17 @@ rocblas_status rocsolver_stedc_template(rocblas_handle handle,
                                     levs, blks, k, n, D + shiftD, strideD,
                                     E + shiftE, strideE, V, 0, ldv, strideV, tmpz, tempgemm, splits,
                                     eps);
+
+            if(show_idd || show_dcount)
+            {
+                std::cout << "\nk=" << k << std::endl;
+            }
+            if(show_idd)
+            {
+                print_device_matrix(std::cout, "idd_z", 1, n, splits + 2 + n * 3, 1);
+            }
+
+
             if(n > deflate_max_n || !enable_new_merge_prepare)
             {
                 ROCSOLVER_LAUNCH_KERNEL((stedc_mergePrepare_DeflateRepeated_kernel<S>),
@@ -2554,9 +2565,7 @@ rocblas_status rocsolver_stedc_template(rocblas_handle handle,
                                         V, 0, ldv, strideV, tmpz, tempgemm, splits, eps);
 
                 hipError_t status = hipStreamSynchronize(stream);
-                if (show_idd || show_dcount) {
-                    std::cout << "\nk=" << k << std::endl;
-                }
+                
                 //print_device_matrix(std::cout, "map", 1, n, splits + 2 + n * 8, 1);
                 //print_device_matrix(std::cout, "D", 1, n, D, 1);
                 //print_device_matrix(std::cout, "mtols", 1, n, tempgemm + n * 4, 1);
@@ -2566,7 +2575,7 @@ rocblas_status rocsolver_stedc_template(rocblas_handle handle,
                 ////print_device_matrix(std::cout, "dbg3", 1, n, splits + 2 + n * 15, 1);
                 ////print_device_matrix(std::cout, "dbg4", 1, n, splits + 2 + n * 16, 1);
                 if (show_idd) {
-                    print_device_matrix(std::cout, "idd", 1, n, splits + 2 + n * 3, 1);
+                    print_device_matrix(std::cout, "idd_r", 1, n, splits + 2 + n * 3, 1);
                 }
                 if (show_dcount) {
                     print_device_matrix(std::cout, "dcount", 1, n, splits + 2 + n * 9, 1);
