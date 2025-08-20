@@ -494,6 +494,7 @@ bool syevd_heevd_file_initData(const rocblas_handle handle,
     {
         rocblas_init<T>(hA, true);
 
+        // Load Matrix from file
         size_t expected_size = (size_t)bc * n * n * sizeof(T);
         std::error_code ec;
         size_t size = fs::file_size(path, ec);
@@ -525,6 +526,7 @@ bool syevd_heevd_file_initData(const rocblas_handle handle,
 
         std::cout << "Read data from \"" << path << "\"\n";
 
+        // Show submatrix if requested
         if (std::getenv("SHOW_SUBMAT") != nullptr) {
             int maxi = std::atoi(std::getenv("SHOW_SUBMAT"));
             std::cout << maxi << "x" << maxi << " submatrix:\n";
@@ -537,6 +539,33 @@ bool syevd_heevd_file_initData(const rocblas_handle handle,
             }
         }
 
+        // Check if it is symmetric
+        std::cout << "Checking if matrix is symmetric...";
+        constexpr size_t max_err = 30;
+        size_t nerr = 0;
+        for(int i = 0; i < n; i++)
+        {
+            for(int j = i; j < n; j++)
+            {
+                T a = hA[0][i + j * n];
+                T b = hA[0][j + i * n];
+                if (a != b) {
+                    std::cout << "\nFound nonsymmetric values:\n"
+                              << "A[" << i << ", " << j << "]=" << a << "\n"
+                              << "A[" << j << ", " << i << "]=" << b << "\n";
+                    nerr++;
+                }
+                if(nerr > max_err)
+                    break;
+            }
+            if(nerr > max_err)
+                break;
+        }
+        if (nerr==0)
+            std::cout << "Ok\n";
+
+
+        // make copy of original data to test vectors if required
         if (test && evect == rocblas_evect_original) {
             std::cout << "make a copy hA -> A\n";
             std::cout << "lda=" << lda << "\tn=" << n << "\n";
@@ -546,20 +575,6 @@ bool syevd_heevd_file_initData(const rocblas_handle handle,
         // scale A to avoid singularities
         for(rocblas_int b = 0; b < bc; ++b)
         {
-            //for(rocblas_int i = 0; i < n; i++)
-            //{
-            //    for(rocblas_int j = i; j < n; j++)
-            //    {
-            //        if(i == j)
-            //            hA[b][i + j * lda] = std::real(hA[b][i + j * lda]) + 400;
-            //        else
-            //        {
-            //            hA[b][i + j * lda] -= 4;
-            //            hA[b][j + i * lda] = hA[b][i + j * lda];
-            //        }
-            //    }
-            //}
-
             // make copy of original data to test vectors if required
             if(test && evect == rocblas_evect_original)
             {
