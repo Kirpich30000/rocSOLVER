@@ -27,6 +27,13 @@
 
 #pragma once
 
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <cstring>
+#include <cstdlib>
+namespace fs = std::filesystem;
+
 #include "common/matrix_utils/matrix_utils.hpp"
 #include "common/misc/client_util.hpp"
 #include "common/misc/clientcommon.hpp"
@@ -470,6 +477,112 @@ void syevd_heevd_clement_initData(const rocblas_handle handle,
     }
 }
 
+// Load data from binary file
+template <bool CPU, bool GPU, typename T, typename Td, typename Th>
+bool syevd_heevd_file_initData(const rocblas_handle handle,
+                               const rocblas_evect evect,
+                               const rocblas_int n,
+                               Td& dA,
+                               const rocblas_int lda,
+                               const rocblas_int bc,
+                               Th& hA,
+                               std::vector<T>& A,
+                               char* path,
+                               bool test = true)
+{
+    if(CPU)
+    {
+        rocblas_init<T>(hA, true);
+
+        size_t expected_size = (size_t)bc * n * n * sizeof(T);
+        std::error_code ec;
+        size_t size = fs::file_size(path, ec);
+        if(ec) {
+            std::cerr << "Error while accessing \"" << path << "\"\nError code: " << ec.message() << std::endl;
+            return false;
+        }
+        if (size != expected_size) {
+            std::cerr << "Error while accessing \"" << path << "\"\nFile size ("
+                      << size << ") != expected size (" << expected_size << ")\n";
+            return false;
+        }
+        else {
+            std::ifstream file(path, std::ios::in | std::ios::binary);
+            void* ptr = &hA[0][0];
+            file.read((char*)ptr, size);
+            if(file.bad())
+            {
+                std::cerr << "Error after reading \"" << path << "\"\nbadbit is set\n";
+                return false;
+            }
+            if(file.fail())
+            {
+                std::cerr << "Error after reading \"" << path
+                          << "\"\nError: " << std::strerror(errno) << "\n";
+                return false;
+            }
+        }
+
+        std::cout << "Read data from \"" << path << "\"\n";
+
+        if (std::getenv("SHOW_SUBMAT") != nullptr) {
+            int maxi = std::atoi(std::getenv("SHOW_SUBMAT"));
+            std::cout << maxi << "x" << maxi << " submatrix:\n";
+            for (int i = 0; i < maxi; i++) {
+                for(int j = 0; j < maxi; j++)
+                {
+                    std::cout << hA[0][i + j * n] << "\t";
+                }
+                std::cout << "\n";
+            }
+        }
+
+        if (test && evect == rocblas_evect_original) {
+            std::cout << "make a copy hA -> A\n";
+            std::cout << "lda=" << lda << "\tn=" << n << "\n";
+            std::memcpy(&A[0], &hA[0][0], size);
+        }
+        /*
+        // scale A to avoid singularities
+        for(rocblas_int b = 0; b < bc; ++b)
+        {
+            //for(rocblas_int i = 0; i < n; i++)
+            //{
+            //    for(rocblas_int j = i; j < n; j++)
+            //    {
+            //        if(i == j)
+            //            hA[b][i + j * lda] = std::real(hA[b][i + j * lda]) + 400;
+            //        else
+            //        {
+            //            hA[b][i + j * lda] -= 4;
+            //            hA[b][j + i * lda] = hA[b][i + j * lda];
+            //        }
+            //    }
+            //}
+
+            // make copy of original data to test vectors if required
+            if(test && evect == rocblas_evect_original)
+            {
+                std::cout << "make a copy\n";
+                for(rocblas_int i = 0; i < n; i++)
+                {
+                    for(rocblas_int j = 0; j < n; j++)
+                        A[b * lda * n + i + j * lda] = hA[b][i + j * lda];
+                }
+            }
+        }
+        */
+    }
+
+    if(GPU)
+    {
+        // now copy to the GPU
+        CHECK_HIP_ERROR(dA.transfer_from(hA));
+    }
+
+    return true;
+}
+
 template <bool CPU, bool GPU, typename T, typename Td, typename Th>
 void syevd_heevd_initData(const rocblas_handle handle,
                           const rocblas_evect evect,
@@ -481,7 +594,11 @@ void syevd_heevd_initData(const rocblas_handle handle,
                           std::vector<T>& A,
                           bool test = true)
 {
-    if((std::getenv("TEST_EIG7") != nullptr) || (std::getenv("SYEVD_TEST_EIG7") != nullptr))
+    if ((std::getenv("TEST_FILE") != nullptr))
+    {
+        syevd_heevd_file_initData<CPU, GPU>(handle, evect, n, dA, lda, bc, hA, A, std::getenv("TEST_FILE"), test);
+    }
+    else if((std::getenv("TEST_EIG7") != nullptr) || (std::getenv("SYEVD_TEST_EIG7") != nullptr))
     {
         syevd_heevd_eig7_initData<CPU, GPU>(handle, evect, n, dA, lda, bc, hA, A, test);
     }
