@@ -524,7 +524,16 @@ bool syevd_heevd_file_initData(const rocblas_handle handle,
             }
         }
 
-        std::cout << "Read data from \"" << path << "\"\n";
+        // std::cout << "Read data from \"" << path << "\"\n";
+
+        if (std::getenv("SCALE") != nullptr) {
+            float scale = std::atof(std::getenv("SCALE"));
+            for(int i = 0; i < n; i++) {
+                for(int j = 0; j < n; j++) {
+                    hA[0][i + j * n] *= scale;
+                }
+            }
+        }
 
         // Show submatrix if requested
         if (std::getenv("SHOW_SUBMAT") != nullptr) {
@@ -540,8 +549,7 @@ bool syevd_heevd_file_initData(const rocblas_handle handle,
         }
 
         // Check if it is symmetric
-        std::cout << "Checking if matrix is symmetric...";
-        constexpr size_t max_err = 30;
+        constexpr size_t max_err = 10;
         size_t nerr = 0;
         for(int i = 0; i < n; i++)
         {
@@ -551,8 +559,8 @@ bool syevd_heevd_file_initData(const rocblas_handle handle,
                 T b = hA[0][j + i * n];
                 if (a != b) {
                     std::cout << "\nFound nonsymmetric values:\n"
-                              << "A[" << i << ", " << j << "]=" << a << "\n"
-                              << "A[" << j << ", " << i << "]=" << b << "\n";
+                              << "hA[" << i << ", " << j << "]=" << a << "\n"
+                              << "hA[" << j << ", " << i << "]=" << b << "\n";
                     nerr++;
                 }
                 if(nerr > max_err)
@@ -561,14 +569,12 @@ bool syevd_heevd_file_initData(const rocblas_handle handle,
             if(nerr > max_err)
                 break;
         }
-        if (nerr==0)
-            std::cout << "Ok\n";
 
-
+        
         // make copy of original data to test vectors if required
         if (test && evect == rocblas_evect_original) {
-            std::cout << "make a copy hA -> A\n";
-            std::cout << "lda=" << lda << "\tn=" << n << "\n";
+            //std::cout << "make a copy hA -> A\n";
+            //std::cout << "lda=" << lda << "\tn=" << n << "\n";
             std::memcpy(&A[0], &hA[0][0], size);
         }
         /*
