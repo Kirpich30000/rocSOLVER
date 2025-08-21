@@ -479,7 +479,7 @@ void syevd_heevd_clement_initData(const rocblas_handle handle,
 
 // Load data from binary file
 template <bool CPU, bool GPU, typename T, typename Td, typename Th>
-bool syevd_heevd_file_initData(const rocblas_handle handle,
+void syevd_heevd_file_initData(const rocblas_handle handle,
                                const rocblas_evect evect,
                                const rocblas_int n,
                                Td& dA,
@@ -498,12 +498,12 @@ bool syevd_heevd_file_initData(const rocblas_handle handle,
         size_t file_size = fs::file_size(path, ec);
         if(ec) {
             std::cerr << "Error while accessing \"" << path << "\"\nError code: " << ec.message() << std::endl;
-            return false;
+            return;
         }
         if (file_size != expected_size) {
             std::cerr << "Error while accessing \"" << path << "\"\nFile size ("
                       << file_size << ") != expected size (" << expected_size << ")\n";
-            return false;
+            return;
         }
         else {
             std::ifstream file(path, std::ios::in | std::ios::binary);
@@ -516,13 +516,13 @@ bool syevd_heevd_file_initData(const rocblas_handle handle,
             if(file.bad())
             {
                 std::cerr << "Error after reading \"" << path << "\"\nbadbit is set\n";
-                return false;
+                return;
             }
             if(file.fail())
             {
                 std::cerr << "Error after reading \"" << path
                           << "\"\nError: " << std::strerror(errno) << "\n";
-                return false;
+                return;
             }
         }
 
@@ -593,7 +593,7 @@ bool syevd_heevd_file_initData(const rocblas_handle handle,
         CHECK_HIP_ERROR(dA.transfer_from(hA));
     }
 
-    return true;
+    return;
 }
 
 template <bool CPU, bool GPU, typename T, typename Td, typename Th>
