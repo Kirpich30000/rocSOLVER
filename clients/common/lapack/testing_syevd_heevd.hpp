@@ -492,25 +492,27 @@ bool syevd_heevd_file_initData(const rocblas_handle handle,
 {
     if(CPU)
     {
-        rocblas_init<T>(hA, true);
-
         // Load Matrix from file
         size_t expected_size = (size_t)bc * n * n * sizeof(T);
         std::error_code ec;
-        size_t size = fs::file_size(path, ec);
+        size_t file_size = fs::file_size(path, ec);
         if(ec) {
             std::cerr << "Error while accessing \"" << path << "\"\nError code: " << ec.message() << std::endl;
             return false;
         }
-        if (size != expected_size) {
+        if (file_size != expected_size) {
             std::cerr << "Error while accessing \"" << path << "\"\nFile size ("
-                      << size << ") != expected size (" << expected_size << ")\n";
+                      << file_size << ") != expected size (" << expected_size << ")\n";
             return false;
         }
         else {
             std::ifstream file(path, std::ios::in | std::ios::binary);
-            void* ptr = &hA[0][0];
-            file.read((char*)ptr, size);
+            for (rocblas_int b = 0; b < bc; ++b) {
+                for (rocblas_int j = 0; j < n; j++) {
+                    void* ptr = &hA[b][j * lda];
+                    file.read((char*)ptr, n * sizeof(T));
+                }
+            }
             if(file.bad())
             {
                 std::cerr << "Error after reading \"" << path << "\"\nbadbit is set\n";
@@ -524,8 +526,7 @@ bool syevd_heevd_file_initData(const rocblas_handle handle,
             }
         }
 
-        // std::cout << "Read data from \"" << path << "\"\n";
-
+        // Scale matrix
         if (std::getenv("SCALE") != nullptr) {
             float scale = std::atof(std::getenv("SCALE"));
             for(int i = 0; i < n; i++) {
@@ -572,19 +573,11 @@ bool syevd_heevd_file_initData(const rocblas_handle handle,
 
         
         // make copy of original data to test vectors if required
-        if (test && evect == rocblas_evect_original) {
-            //std::cout << "make a copy hA -> A\n";
-            //std::cout << "lda=" << lda << "\tn=" << n << "\n";
-            std::memcpy(&A[0], &hA[0][0], size);
-        }
-        /*
-        // scale A to avoid singularities
         for(rocblas_int b = 0; b < bc; ++b)
         {
             // make copy of original data to test vectors if required
             if(test && evect == rocblas_evect_original)
             {
-                std::cout << "make a copy\n";
                 for(rocblas_int i = 0; i < n; i++)
                 {
                     for(rocblas_int j = 0; j < n; j++)
@@ -592,7 +585,6 @@ bool syevd_heevd_file_initData(const rocblas_handle handle,
                 }
             }
         }
-        */
     }
 
     if(GPU)
