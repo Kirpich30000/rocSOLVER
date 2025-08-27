@@ -626,11 +626,11 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
     constexpr int F_TCAND = 1 << L_F_TCAND_BIT;
 
     // find deflate candidates
-    int i = hipThreadIdx_x + hipBlockDim_x * hipBlockIdx_x;
+    rocblas_int i = hipThreadIdx_x + hipBlockDim_x * hipBlockIdx_x;
     if (i < n)
     {
-        int next = (i + 1) < n ? (i + 1) : i;
-        int prev = (i > 0) ? (i - 1) : 0;
+        rocblas_int next = std::min(i + 1, n - 1);
+        rocblas_int prev = std::max(i - 1, 0);
         S tol = tolsD[i];
         S d   = md[i];
         S dn  = md[next];
