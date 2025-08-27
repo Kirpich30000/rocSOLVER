@@ -374,6 +374,57 @@ void stedc_wilkinson_initData(const rocblas_handle handle,
 }
 
 template <bool CPU, bool GPU, typename T, typename Sd, typename Td, typename Ud, typename Sh, typename Th, typename Uh>
+void stedc_random_initData(const rocblas_handle handle,
+                           const rocblas_evect evect,
+                           const rocblas_int n,
+                           Sd& dD,
+                           Sd& dE,
+                           Td& dC,
+                           const rocblas_int ldc,
+                           Ud& dInfo,
+                           Sh& hD,
+                           Sh& hE,
+                           Th& hC,
+                           Uh& hInfo)
+{
+    if(CPU)
+    {
+        using S = decltype(std::real(T{}));
+
+        rocblas_init<S>(hD, true);
+        rocblas_init<S>(hE, true);
+
+        for(int i = 0; i < n - 1; ++i)
+            hE[0][i] -= 4;
+
+        // initialize C to the identity matrix
+        if(evect == rocblas_evect_original)
+        {
+            for(rocblas_int j = 0; j < n; j++)
+            {
+                for(rocblas_int i = 0; i < n; i++)
+                {
+                    if(i == j)
+                        hC[0][i + j * ldc] = 1;
+                    else
+                        hC[0][i + j * ldc] = 0;
+                }
+            }
+        }
+    }
+
+    if(GPU)
+    {
+        // now copy to the GPU
+        CHECK_HIP_ERROR(dD.transfer_from(hD));
+        CHECK_HIP_ERROR(dE.transfer_from(hE));
+
+        if(evect == rocblas_evect_original)
+            CHECK_HIP_ERROR(dC.transfer_from(hC));
+    }
+}
+
+template <bool CPU, bool GPU, typename T, typename Sd, typename Td, typename Ud, typename Sh, typename Th, typename Uh>
 void stedc_default_initData(const rocblas_handle handle,
                             const rocblas_evect evect,
                             const rocblas_int n,
@@ -556,6 +607,11 @@ void stedc_initData(const rocblas_handle handle,
         stedc_identity_initData<CPU, GPU, T>(handle, evect, n, dD, dE, dC, ldc, dInfo, hD, hE, hC,
                                              hInfo);
     }
+    else if((std::getenv("TEST_RANDOM") != nullptr) || (std::getenv("STEDC_TEST_RANDOM") != nullptr))
+    {
+        stedc_random_initData<CPU, GPU, T>(handle, evect, n, dD, dE, dC, ldc, dInfo, hD, hE, hC,
+                                           hInfo);
+    }
     else
     {
         stedc_default_initData<CPU, GPU, T>(handle, evect, n, dD, dE, dC, ldc, dInfo, hD, hE, hC,
@@ -640,6 +696,21 @@ void stedc_getError(const rocblas_handle handle,
     // CPU lapack
     cpu_stedc(evect, n, hD[0], hE[0], hC[0], ldc, work.data(), lwork, rwork.data(), lrwork,
               iwork.data(), liwork, hInfo[0]);
+
+    // Depending on `evect`, stedc can return the eigenvectors of the original
+    // matrix (A) or the eigenvectors of the tridiagonal matrix (T).  Thus,
+    // given a pair U, D of eigenvectors and eigenvalues computed by stedc the
+    // reconstructed matrix
+    //
+    // U * D * adjoint(U)
+    //
+    // can be either A or T.  The following code uses lapack to compute
+    //
+    // AorT = U * D * adjoint(U),
+    //
+    // which will be later used to compare with the eigenvectors and
+    // eigenvalues computed by rocSOLVER.
+    //
     auto AorT = HMatT::Empty();
     if((evect != rocblas_evect_none) && (n > 0))
     {
@@ -671,42 +742,24 @@ void stedc_getError(const rocblas_handle handle,
         // check eigenvectors if required
         if(evect != rocblas_evect_none)
         {
-            // New matrix initialization
+            // Input matrix
             auto C = HMatT::Wrap(hCRes[0], ldc, n)->block(BDescT().nrows(n).ncols(n));
+            // Computed eigenvalues
             auto d = HMatT::Convert(hDRes[0], 1, n)->block(BDescT().nrows(1).ncols(n));
+            // Diagonal matrix of size n by n with computed eigenvalues
             auto D = HMatT::Zeros(n, n).diag(d);
-            /* std::cout << "--- Computed eigenvalues: " << std::endl; */
-            /* d.print(); */
 
+            // Orthogonal error
             auto OE = C * adjoint(C) - HMatT::Eye(n, n);
             err = OE.max_col_norm();
             *pOE = err;
-            /* std::cout << "--- Orthogonal error: " << err << std::endl; */
             *max_errv = err > *max_err ? err : *max_err;
 
-            auto AE = AorT - C * D * adjoint(C);
-            /* std::cout << "--- Residual error: " << err << std::endl; */
-            err = AE.norm() / AorT.norm();
+            // Residual error
+            auto RE = AorT - C * D * adjoint(C);
+            err = RE.norm() / AorT.norm();
             *pAE = err;
             *max_err = err > *max_err ? err : *max_err;
-
-            /* // both eigenvalues and eigenvectors needed; need to implicitly test */
-            /* // eigenvectors due to non-uniqueness of eigenvectors under scaling */
-
-            /* // multiply A with each of the n eigenvectors and divide by corresponding */
-            /* // eigenvalues */
-            /* T alpha; */
-            /* T beta = 0; */
-            /* for(int j = 0; j < n; j++) */
-            /* { */
-            /*     alpha = T(1) / hDRes[0][j]; */
-            /*     cpu_symv_hemv(rocblas_fill_upper, n, alpha, hA[0], lda, hCRes[0] + j * ldc, 1, beta, */
-            /*                   hC[0] + j * ldc, 1); */
-            /* } */
-
-            /* // error is ||hC - hCRes|| / ||hC|| */
-            /* // using frobenius norm */
-            /* *max_errv = norm_error('F', n, n, ldc, hCRes[0], hC[0]); */
         }
     }
 }
@@ -885,7 +938,7 @@ void testing_stedc(Arguments& argus)
                           hInfo, hInfoRes, &max_err, &max_errv, &DE, &OE, &AE);
 
     // collect performance data
-    if(argus.timing)
+    if(argus.timing && hot_calls > 0)
         stedc_getPerfData<T>(handle, evect, n, dD, dE, dC, ldc, dInfo, hD, hE, hC, hInfo,
                              &gpu_time_used, &cpu_time_used, hot_calls, argus.profile,
                              argus.profile_kernels, argus.perf);
