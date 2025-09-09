@@ -369,6 +369,18 @@ rocblas_status rocsolver_syevd_heevd_template(rocblas_handle handle,
     ROCSOLVER_ENTER("syevd_heevd", "evect:", evect, "uplo:", uplo, "n:", n, "shiftA:", shiftA,
                     "lda:", lda, "bc:", batch_count);
 
+#define DEBUG_OUTPUT 1
+#if DEBUG_OUTPUT
+    static int global_cnt = 0;
+    global_cnt++;
+    char* env_prof = std::getenv("PROF");
+    bool show_prof = global_cnt == 2 && env_prof && env_prof[0] == '1';
+
+    std::vector<hipEvent_t> events(4);
+    for(int i = 0; i < 4; i++)
+        HIP_CHECK(hipEventCreate(&events[i]));
+#endif
+
     // quick return
     if(batch_count == 0)
         return rocblas_status_success;
@@ -433,10 +445,18 @@ rocblas_status rocsolver_syevd_heevd_template(rocblas_handle handle,
 
     // TODO: Scale the matrix
 
+    if (show_prof) {
+        HIP_CHECK(hipEventRecord(events[0], stream));
+    }
+
     // reduce A to tridiagonal form
     rocsolver_sytrd_hetrd_template<BATCHED>(handle, uplo, n, A, shiftA, lda, strideA, D, strideD, E,
                                             strideE, tau, n, batch_count, scalars, (T*)work1,
                                             (T*)work2, tmptau_W, workArr, false);
+
+    if (show_prof) {
+        HIP_CHECK(hipEventRecord(events[1], stream));
+    }
 
     if(sterf_mode == rocsolver_alg_mode_hybrid && evect != rocblas_evect_original)
     {
@@ -455,6 +475,10 @@ rocblas_status rocsolver_syevd_heevd_template(rocblas_handle handle,
             handle, rocblas_evect_tridiagonal, n, D, 0, strideD, E, 0, strideE, tmptau_W, 0, ldw,
             strideW, info, batch_count, work3, (S*)work2, (S*)work1, tmpz, splits, (S**)workArr);
 
+        if (show_prof) {
+            HIP_CHECK(hipEventRecord(events[2], stream));
+        }
+
         // update the eigenvectors (if applicable)
         if(evect == rocblas_evect_original)
         {
@@ -470,6 +494,23 @@ rocblas_status rocsolver_syevd_heevd_template(rocblas_handle handle,
                                     shiftA, lda, strideA);
         }
     }
+
+    if (show_prof) {
+        HIP_CHECK(hipEventRecord(events[3], stream));
+        HIP_CHECK(hipStreamSynchronize(stream));
+
+        float total = 0;
+        float cur = 0;
+        for(int i = 0; i < 3; i++)
+        {
+            HIP_CHECK(hipEventElapsedTime(&cur, events[i], events[i + 1]));
+            total += cur;
+            std::cout << cur << "\t";
+        }
+        std::cout << total << "\t";
+    }
+
+
 
     return rocblas_status_success;
 }

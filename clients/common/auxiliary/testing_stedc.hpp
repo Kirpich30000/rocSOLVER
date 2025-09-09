@@ -293,6 +293,122 @@ void stedc_identity_initData(const rocblas_handle handle,
     }
 }
 
+template <bool CPU, bool GPU, typename T, typename Sd, typename Td, typename Ud, typename Sh, typename Th, typename Uh>
+void stedc_file_initData(const rocblas_handle handle,
+                         const rocblas_evect evect,
+                         const rocblas_int n,
+                         Sd& dD,
+                         Sd& dE,
+                         Td& dC,
+                         const rocblas_int ldc,
+                         Ud& /* dInfo */,
+                         Sh& hD,
+                         Sh& hE,
+                         Th& hC,
+                         Uh& /* hInfo */,
+                         const char* path)
+{
+    using S = decltype(std::real(T{}));
+    rocblas_int bc = 1;
+
+    if(CPU)
+    {
+        // Load D and E from file
+        size_t expected_size = (size_t)bc * (n + (n - 1)) * sizeof(S);
+        std::error_code ec;
+        size_t file_size = fs::file_size(path, ec);
+        if(ec) {
+            std::cerr << "Error while accessing \"" << path << "\"\nError code: " << ec.message() << std::endl;
+            return;
+        }
+        if (file_size != expected_size) {
+            std::cerr << "Error while accessing \"" << path << "\"\nFile size ("
+                      << file_size << ") != expected size (" << expected_size << ")\n";
+            return;
+        }
+        else {
+            std::ifstream file(path, std::ios::in | std::ios::binary);
+            for (rocblas_int b = 0; b < bc; ++b) {
+                void* ptrD = &hD[b][0];
+                void* ptrE = &hE[b][0];
+                file.read((char*)ptrD, n * sizeof(S));
+                file.read((char*)ptrE, (n - 1) * sizeof(S));
+            }
+            if(file.bad())
+            {
+                std::cerr << "Error after reading \"" << path << "\"\nbadbit is set\n";
+                return;
+            }
+            if(file.fail())
+            {
+                std::cerr << "Error after reading \"" << path
+                          << "\"\nError: " << std::strerror(errno) << "\n";
+                return;
+            }
+        }
+
+        // Scale matrix
+        if(std::getenv("SCALE") != nullptr)
+        {
+            float scale = std::atof(std::getenv("SCALE"));
+            for (rocblas_int b = 0; b < bc; ++b) {
+                for(int i = 0; i < n; i++) {
+                    hD[b][i] *= scale;
+                }
+                for(int i = 0; i < n - 1; i++) {
+                    hE[b][i] *= scale;
+                }
+            }
+        }
+
+        // Show submatrix if requested
+        if(std::getenv("SHOW_SUBMAT") != nullptr)
+        {
+            int maxi = std::atoi(std::getenv("SHOW_SUBMAT"));
+            
+            for(rocblas_int b = 0; b < bc; ++b) {
+                std::cout << "First " << maxi << " elems in D (batch " << b << "):\n";
+                for(int i = 0; i < maxi; i++) {
+                    std::cout << hD[b][i] << "\t";
+                }
+            
+                std::cout << "\nFirst " << maxi << " elems in E (batch " << b << "):\n ";
+                for(int i = 0; i < maxi; i++) {
+                    std::cout << hE[b][i] << "\t";
+                }
+                std::cout << "\n";
+            }
+        }
+
+
+
+        // Init C with identity
+        rocblas_init<T>(hC, true);
+
+        for(rocblas_int b = 0; b < bc; ++b)
+        {
+            // New matrix initialization
+            using HMatT = HostMatrix<T, rocblas_int>;
+            auto hCw = HMatT::Wrap(hC[b], ldc, n);
+            hCw->set_to_zero();
+
+            auto C = HMatT::Eye(n, n);
+            hCw->copy_data_from(C);
+        }
+    }
+
+    if(GPU)
+    {
+        // now copy to the GPU
+        CHECK_HIP_ERROR(dD.transfer_from(hD));
+        CHECK_HIP_ERROR(dE.transfer_from(hE));
+
+        if(evect == rocblas_evect_original)
+            CHECK_HIP_ERROR(dC.transfer_from(hC));
+    }
+}
+
+
 // Creates an `n` by `n` tridiagonal, Wilkinson matrix, which is formed as follows:
 //
 // 1. If `n` is even:
@@ -584,7 +700,13 @@ void stedc_initData(const rocblas_handle handle,
                     Th& hC,
                     Uh& hInfo)
 {
-    if((std::getenv("TEST_WILKINSON") != nullptr) || (std::getenv("STEDC_TEST_WILKINSON") != nullptr))
+    if((std::getenv("TEST_FILE") != nullptr))
+    {
+        stedc_file_initData<CPU, GPU, T>(handle, evect, n, dD, dE, dC, ldc, dInfo, hD, hE, hC,
+                                         hInfo, std::getenv("TEST_FILE"));
+    }
+    else if((std::getenv("TEST_WILKINSON") != nullptr)
+            || (std::getenv("STEDC_TEST_WILKINSON") != nullptr))
     {
         stedc_wilkinson_initData<CPU, GPU, T>(handle, evect, n, dD, dE, dC, ldc, dInfo, hD, hE, hC,
                                               hInfo);
@@ -639,7 +761,10 @@ void stedc_getError(const rocblas_handle handle,
                     Uh& hInfo,
                     Uh& hInfoRes,
                     double* max_err,
-                    double* max_errv)
+                    double* max_errv,
+                    double* pDE,
+                    double* pOE,
+                    double* pAE)
 {
     constexpr bool COMPLEX = rocblas_is_complex<T>;
     using S = decltype(std::real(T{}));
@@ -733,6 +858,7 @@ void stedc_getError(const rocblas_handle handle,
         // error is ||hD - hDRes|| / ||hD||
         // using frobenius norm
         err = norm_error('F', 1, n, 1, hD[0], hDRes[0]);
+        *pDE = err;
         *max_err = err > *max_err ? err : *max_err;
 
         // check eigenvectors if required
@@ -748,11 +874,13 @@ void stedc_getError(const rocblas_handle handle,
             // Orthogonal error
             auto OE = C * adjoint(C) - HMatT::Eye(n, n);
             err = OE.max_col_norm();
+            *pOE = err;
             *max_errv = err > *max_err ? err : *max_err;
 
             // Residual error
             auto RE = AorT - C * D * adjoint(C);
             err = RE.norm() / AorT.norm();
+            *pAE = err;
             *max_err = err > *max_err ? err : *max_err;
         }
     }
@@ -859,6 +987,7 @@ void testing_stedc(Arguments& argus)
     size_t size_E = n;
     size_t size_C = ldc * n;
     double max_err = 0, max_errv = 0, gpu_time_used = 0, cpu_time_used = 0;
+    double DE = 1000, OE = 1000, AE = 1000;
 
     size_t size_DRes = (argus.unit_check || argus.norm_check) ? size_D : 0;
     size_t size_ERes = (argus.unit_check || argus.norm_check) ? size_E : 0;
@@ -928,7 +1057,7 @@ void testing_stedc(Arguments& argus)
     // check computations
     if(argus.unit_check || argus.norm_check)
         stedc_getError<T>(handle, evect, n, dD, dE, dC, ldc, dInfo, hD, hDRes, hE, hERes, hC, hCRes,
-                          hInfo, hInfoRes, &max_err, &max_errv);
+                          hInfo, hInfoRes, &max_err, &max_errv, &DE, &OE, &AE);
 
     // collect performance data
     if(argus.timing && hot_calls > 0)
@@ -957,8 +1086,8 @@ void testing_stedc(Arguments& argus)
             rocsolver_bench_header("Results:");
             if(argus.norm_check)
             {
-                rocsolver_bench_output("cpu_time_us", "gpu_time_us", "error");
-                rocsolver_bench_output(cpu_time_used, gpu_time_used, std::max(max_err, max_errv));
+                rocsolver_bench_output("cpu_time_us", "gpu_time_us", "errorD", "errorO", "errorA");
+                rocsolver_bench_output(cpu_time_used, gpu_time_used, DE, OE, AE);
             }
             else
             {
@@ -970,7 +1099,7 @@ void testing_stedc(Arguments& argus)
         else
         {
             if(argus.norm_check)
-                rocsolver_bench_output(gpu_time_used, std::max(max_err, max_errv));
+                rocsolver_bench_output(gpu_time_used, DE, OE, AE);
             else
                 rocsolver_bench_output(gpu_time_used);
         }
