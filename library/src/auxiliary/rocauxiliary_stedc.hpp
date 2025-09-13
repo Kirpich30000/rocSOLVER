@@ -493,21 +493,21 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
         }
 
         S maxd = 0;
-        S maxz = 0;
+        S maxpz = 0;
         // copy z values from first sub-block
         // copy last line of the first sub-block
         for(int i = hipThreadIdx_x; i < sz1; i += hipBlockDim_x)
         {
             S val = C[p2 - 1 + (p1 + i) * ldc] / sqrt(2);
             z[p1 + i] = val;
-            maxz = std::max(maxz, std::abs(val));
+            maxpz = std::max(maxpz, std::abs(p * val));
         }
         // copy first line of the second sub-block
         for(int i = hipThreadIdx_x; i < sz2; i += hipBlockDim_x)
         {
             S val = C[p2 - 0 + (p2 + i) * ldc] / sqrt(2);
             z[p2 + i] = val;
-            maxz = std::max(maxz, std::abs(val));
+            maxpz = std::max(maxpz, std::abs(p * val));
         }
 
         // 2. calculate deflation tolerance
@@ -521,10 +521,10 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
 
         // temporary arrays in shared memory
         // used to store temp values during reduction
-        __shared__ S lmaxz[STEDC_BDIM];
+        __shared__ S lmaxpz[STEDC_BDIM];
         __shared__ S lmaxd[STEDC_BDIM];
         lmaxd[hipThreadIdx_x] = maxd;
-        lmaxz[hipThreadIdx_x] = maxz;
+        lmaxpz[hipThreadIdx_x] = maxpz;
         __syncthreads();
 
         rocblas_int dim2 = hipBlockDim_x / 2;
@@ -533,11 +533,11 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
             if(hipThreadIdx_x < dim2)
             {
                 S vald = lmaxd[hipThreadIdx_x + dim2];
-                S valz = lmaxz[hipThreadIdx_x + dim2];
+                S valz = lmaxpz[hipThreadIdx_x + dim2];
                 maxd = std::max(maxd, vald);
-                maxz = std::max(maxz, valz);
+                maxpz = std::max(maxpz, valz);
                 lmaxd[hipThreadIdx_x] = maxd;
-                lmaxz[hipThreadIdx_x] = maxz;
+                lmaxpz[hipThreadIdx_x] = maxpz;
             }
             dim2 /= 2;
             __syncthreads();
@@ -545,10 +545,10 @@ ROCSOLVER_KERNEL void __launch_bounds__(STEDC_BDIM)
 
         // tol should be  8 * eps * (max diagonal or z element participating in merge)
         maxd = lmaxd[0];
-        maxz = lmaxz[0];
+        maxpz = lmaxpz[0];
 
-        S tolD = 8 * eps * std::max(maxd, maxz);
-        S tolZ = 8 * eps * std::max(maxd, maxz);
+        S tolD = 8 * eps * maxd;
+        S tolZ = 8 * eps * maxpz;
         // store tolerances in global memory
         for(int i = hipThreadIdx_x; i < sz; i += hipBlockDim_x)
         {
