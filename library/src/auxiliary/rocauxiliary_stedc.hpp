@@ -1783,7 +1783,7 @@ inline rocblas_int stedc_num_levels(const rocblas_int n)
     if(n <= 16)
         levels = 0;
     else
-        levels = std::ceil(std::log2(n)) - 4;
+        levels = std::floor(std::log2(n));
 
     return levels;
 }
@@ -2012,9 +2012,12 @@ rocblas_status rocsolver_stedc_template(rocblas_handle handle,
 
         // 2. solve phase
         //-----------------------------
-        ROCSOLVER_LAUNCH_KERNEL((stedc_solve_kernel<S>), dim3(blks, batch_count), dim3(64), 0,
-                                stream, levs, n, D + shiftD, strideD, E + shiftE, strideE, V, 0,
-                                ldv, strideV, info, (S*)work_stack, splits, eps, ssfmin, ssfmax);
+        if (n & (n - 1)) {
+            // run steqr only if n is not power of 2
+            ROCSOLVER_LAUNCH_KERNEL((stedc_solve_kernel<S>), dim3(blks, batch_count), dim3(64), 0,
+                                    stream, levs, n, D + shiftD, strideD, E + shiftE, strideE, V, 0,
+                                    ldv, strideV, info, (S*)work_stack, splits, eps, ssfmin, ssfmax);
+        }
 
         // 3. merge phase
         //----------------
