@@ -2014,7 +2014,7 @@ rocblas_status rocsolver_stedc_template(rocblas_handle handle,
         //-----------------------------
         if (n & (n - 1)) {
             // run steqr only if n is not power of 2
-            ROCSOLVER_LAUNCH_KERNEL((stedc_solve_kernel<S>), dim3(blks, batch_count), dim3(64), 0,
+            ROCSOLVER_LAUNCH_KERNEL((stedc_solve_kernel<S>), dim3(blks, batch_count), dim3(STEDC_BDIM), 0,
                                     stream, levs, n, D + shiftD, strideD, E + shiftE, strideE, V, 0,
                                     ldv, strideV, info, (S*)work_stack, splits, eps, ssfmin, ssfmax);
         }
